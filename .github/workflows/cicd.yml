@@ -7,59 +7,101 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    
     defaults:
       run:
         working-directory: "app"
+   
     steps:
       - name: Get code
         uses: actions/checkout@v4
+      
       - name: Setup NodeJS
         uses: actions/setup-node@v4
         with:
           node-version: 20
+      
       - name: Cache dependencies
         uses: actions/cache@v4
         with:
           path: ~/.npm 
           key: npm-deps-${{ hashFiles('**/package-lock.json') }}
+      
       - name: Install dependencies
         run: npm ci
+      
       - name: Run tests
         run: npm test 
 
-  deploy:
+  merge:
     needs: test
+    runs-on: ubuntu-latest 
+
+    # without this the runner may be able to read what's in the repo, but fail when it tries to push main
+    permissions:
+      contents: write 
+    
+    steps:
+      - name: Get repo for merging
+        uses: actions/checkout@v4
+        # this step allows access to branch history 
+        with:
+          fetch-depth: 0
+
+      - name: Megre dev into main 
+        # git requires an identity when creating a merge commit, so we mock that in the first 2 lines 
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git merge origin/dev
+          git push origin main
+
+  deploy:
+    needs: merge 
+    
     env:
       EC2_HOST: ${{ secrets.EC2_HOST }}
       EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
       EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+    
     runs-on: ubuntu-latest
+    
     steps:
+
       - name: Create SSH key file
         run: |
           mkdir -p ~/.ssh
           printf '%s' "$EC2_SSH_KEY" > ~/.ssh/ec2_key.pem
           chmod 600 ~/.ssh/ec2_key.pem
+
       - name: Testing EC2 connection
         run: |
           ssh -o StrictHostKeyChecking=no \
           -i ~/.ssh/ec2_key.pem \
           "$EC2_USERNAME"@"$EC2_HOST" \
           echo "Connected to EC2 succsessfully"
+
       - name: Get code for deployment 
         uses: actions/checkout@v4
+        # makes sure it retrieves the info from main
+        with:
+          ref: main 
+
       - name: Create deployment directory
         run: |
           ssh -o StrictHostKeyChecking=no \
           -i ~/.ssh/ec2_key.pem \
           "$EC2_USERNAME"@"$EC2_HOST" \
           mkdir -p /home/ubuntu/tech611-ttt-cicd
+
       - name: Copy app to EC2
         working-directory: app
         run: |
           rsync -avz --exclude node_modules \
           -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/ec2_key.pem" \
           ./ "$EC2_USERNAME"@"$EC2_HOST:/home/ubuntu/tech611-ttt-cicd/"
+
       - name: Install dependencies and run app
         run: |
           ssh -o StrictHostKeyChecking=no \
@@ -69,5 +111,6 @@ jobs:
           npm ci &&
           (pm2 restart ttt-app || pm2 start npm --name ttt-app -- start) &&
           pm2 save"
+
       - name: Deploy
         run: echo "Deploying..."
