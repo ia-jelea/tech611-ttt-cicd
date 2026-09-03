@@ -60,5 +60,14 @@ jobs:
           rsync -avz --exclude node_modules \
           -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/ec2_key.pem" \
           ./ "$EC2_USERNAME"@"$EC2_HOST:/home/ubuntu/tech611-ttt-cicd/"
+      - name: Install dependencies and run app
+        run: |
+          ssh -o StrictHostKeyChecking=no \
+          -i ~/.ssh/ec2_key.pem \
+          "$EC2_USERNAME"@"$EC2_HOST" \
+          "cd /home/ubuntu/tech611-ttt-cicd &&
+          npm ci &&
+          (pm2 restart ttt-app || pm2 start npm --name ttt-app -- start) &&
+          pm2 save"
       - name: Deploy
         run: echo "Deploying..."
