@@ -37,7 +37,7 @@ jobs:
     steps:
       - name: Create SSH key file
         run: |
-          makedir -p ~/.ssh
+          mkdir -p ~/.ssh
           printf '%s' "$EC2_SSH_KEY" > ~/.ssh/ec2_key.pem
           chmod 600 ~/.ssh/ec2_key.pem
       - name: Testing EC2 connection
