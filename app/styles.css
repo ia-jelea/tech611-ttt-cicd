@@ -1,10 +1,10 @@
 :root {
-	--bg: #07152b;
-	--panel: #0b2340;
-	--line: #1fff6a;
-	--line-dim: #0f9b43;
-	--text: #b8ffce;
-	--text-strong: #e4ffe8;
+  --bg: #ffffff;
+  --panel: #eaf3ff;
+  --line: #1565c0;
+  --line-dim: #64a5e8;
+  --text: #12385c;
+  --text-strong: #06366b;
 }
 
 * {
@@ -14,7 +14,7 @@
 body {
 	margin: 0;
 	font-family: 'Courier New', Courier, monospace;
-	background: radial-gradient(circle at top, #0a2a11 0%, var(--bg) 45%, #010703 100%);
+	background: radial-gradient(circle at top,#ffffff 0%, var(--bg) 55%, #dbeeff 100%);
 	color: var(--text);
 	min-height: 100vh;
 }
@@ -32,7 +32,8 @@ body::before {
 		transparent 4px
 	);
 	mix-blend-mode: screen;
-	opacity: 0.45;
+	/* opacity: 0.45; */
+	opacity: 0.12;
 }
 
 .retro-shell {
