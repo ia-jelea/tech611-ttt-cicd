@@ -46,5 +46,19 @@ jobs:
           -i ~/.ssh/ec2_key.pem \
           "$EC2_USERNAME"@"$EC2_HOST" \
           echo "Connected to EC2 succsessfully"
+      - name: Get code for deployment 
+        uses: actions/checkout@v4
+      - name: Create deployment directory
+        run: |
+          ssh -o StrictHostKeyChecking=no \
+          -i ~/.ssh/ec2_key.pem \
+          "$EC2_USERNAME"@"$EC2_HOST" \
+          mkdir -p /home/ubuntu/tech611-ttt-cicd
+      - name: Copy app to EC2
+        working-directory: app
+        run: |
+          rsync -avz --exclude node_modules \
+          -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/ec2_key.pem" \
+          ./ "$EC2_USERNAME"@"$EC2_HOST:/home/ubuntu/tech611-ttt-cicd/"
       - name: Deploy
         run: echo "Deploying..."
