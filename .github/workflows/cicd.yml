@@ -1,0 +1,40 @@
+name: TTT App Project 
+on: 
+  push: 
+    branches:
+      - dev
+
+# env:
+#   EC2_HOST: ${{ secrets.EC2_HOST }}
+#   EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+#   EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+
+jobs:
+  test:
+    runs-on: ubuntu-lates
+    defaults:
+      run:
+        working-directory: "app"
+    steps:
+      - name: Get code
+        uses: actions/checkout@v4
+      - name: Setup NodeJS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm 
+          key: npm-deps-${{ hashFiles('**/package-lock.json') }}
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        run: npm test 
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy
+        run: echo "Deploying..."
