@@ -2,7 +2,8 @@ name: TTT App Project
 on: 
   push: 
     branches:
-      - dev
+      # - dev
+      - agentic-ai
 
 jobs:
   test:
