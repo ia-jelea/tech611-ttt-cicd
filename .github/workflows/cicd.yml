@@ -1,116 +1,169 @@
-name: TTT App Project 
-on: 
-  push: 
-    branches:
-      - dev
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [dev]
+  push:
+    branches: [dev]
+
+# A release updates shared branches and a single server, so do not run two
+# releases for the same ref at once. Running jobs are intentionally not cancelled.
+concurrency:
+  group: cicd-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   test:
+    name: Test (Node.js ${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20]
+
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     defaults:
       run:
-        working-directory: "app"
-   
+        working-directory: app
+
+    env:
+      MONGODB_INTEGRATION_URI: mongodb://127.0.0.1:27017/tictactoe_ci
+
     steps:
-      - name: Get code
+      - name: Check out the tested revision
         uses: actions/checkout@v4
-      
-      - name: Setup NodeJS
+
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-      
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm 
-          key: npm-deps-${{ hashFiles('**/package-lock.json') }}
-      
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
       - name: Install dependencies
-        run: npm ci
-      
-      - name: Run tests
-        run: npm test 
+        run: npm ci --ignore-scripts
 
-  merge:
+      - name: Run unit and integration tests
+        run: npm run test:all
+
+  promote:
+    name: Promote tested revision to main
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     needs: test
-    runs-on: ubuntu-latest 
-
-    # without this the runner may be able to read what's in the repo, but fail when it tries to push main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
-      contents: write 
-    
+      contents: write
+
     steps:
-      - name: Get repo for merging
+      - name: Check out branch history
         uses: actions/checkout@v4
-        # this step allows access to branch history 
         with:
           fetch-depth: 0
 
-      - name: Megre dev into main 
-        # git requires an identity when creating a merge commit, so we mock that in the first 2 lines 
+      - name: Fast-forward main to the tested revision
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout main
-          git merge origin/dev
-          git push origin main
+          set -euo pipefail
+          git fetch origin main
+          git merge-base --is-ancestor origin/main "$GITHUB_SHA"
+          git push origin "$GITHUB_SHA:refs/heads/main"
 
   deploy:
-    needs: merge 
-    
+    name: Deploy to EC2
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    needs: promote
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
     env:
       EC2_HOST: ${{ secrets.EC2_HOST }}
       EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
       EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-    
-    runs-on: ubuntu-latest
-    
+      EC2_SSH_KNOWN_HOSTS: ${{ secrets.EC2_SSH_KNOWN_HOSTS }}
+      DEPLOY_DIRECTORY: /home/ubuntu/tech611-ttt-cicd
+      PM2_APP_NAME: ttt-app
+
     steps:
-
-      - name: Create SSH key file
+      - name: Check required deployment secrets
+        shell: bash
         run: |
-          mkdir -p ~/.ssh
-          printf '%s' "$EC2_SSH_KEY" > ~/.ssh/ec2_key.pem
-          chmod 600 ~/.ssh/ec2_key.pem
+          set -euo pipefail
+          for name in EC2_HOST EC2_USERNAME EC2_SSH_KEY EC2_SSH_KNOWN_HOSTS; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Required secret $name is not configured"
+              exit 1
+            fi
+          done
 
-      - name: Testing EC2 connection
+      - name: Configure SSH
+        shell: bash
         run: |
-          ssh -o StrictHostKeyChecking=no \
-          -i ~/.ssh/ec2_key.pem \
-          "$EC2_USERNAME"@"$EC2_HOST" \
-          echo "Connected to EC2 succsessfully"
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$EC2_SSH_KEY" > "$RUNNER_TEMP/ec2_key.pem"
+          chmod 600 "$RUNNER_TEMP/ec2_key.pem"
+          printf '%s\n' "$EC2_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
 
-      - name: Get code for deployment 
+      - name: Check out the promoted revision
         uses: actions/checkout@v4
-        # makes sure it retrieves the info from main
         with:
-          ref: main 
+          ref: ${{ github.sha }}
 
       - name: Create deployment directory
+        shell: bash
         run: |
-          ssh -o StrictHostKeyChecking=no \
-          -i ~/.ssh/ec2_key.pem \
-          "$EC2_USERNAME"@"$EC2_HOST" \
-          mkdir -p /home/ubuntu/tech611-ttt-cicd
+          set -euo pipefail
+          ssh -i "$RUNNER_TEMP/ec2_key.pem" \
+            "$EC2_USERNAME@$EC2_HOST" \
+            "mkdir -p '$DEPLOY_DIRECTORY'"
 
-      - name: Copy app to EC2
+      - name: Copy application to EC2
         working-directory: app
+        shell: bash
         run: |
-          rsync -avz --exclude node_modules \
-          -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/ec2_key.pem" \
-          ./ "$EC2_USERNAME"@"$EC2_HOST:/home/ubuntu/tech611-ttt-cicd/"
+          set -euo pipefail
+          rsync --archive --compress \
+            --exclude node_modules \
+            -e "ssh -i $RUNNER_TEMP/ec2_key.pem" \
+            ./ "$EC2_USERNAME@$EC2_HOST:$DEPLOY_DIRECTORY/"
 
-      - name: Install dependencies and run app
+      - name: Install dependencies and restart application
+        shell: bash
         run: |
-          ssh -o StrictHostKeyChecking=no \
-          -i ~/.ssh/ec2_key.pem \
-          "$EC2_USERNAME"@"$EC2_HOST" \
-          "cd /home/ubuntu/tech611-ttt-cicd &&
-          npm ci &&
-          (pm2 restart ttt-app || pm2 start npm --name ttt-app -- start) &&
-          pm2 save"
+          set -euo pipefail
+          ssh -i "$RUNNER_TEMP/ec2_key.pem" \
+            "$EC2_USERNAME@$EC2_HOST" \
+            "cd '$DEPLOY_DIRECTORY' && npm ci --omit=dev --ignore-scripts && \
+            (pm2 restart '$PM2_APP_NAME' --update-env || pm2 start npm --name '$PM2_APP_NAME' -- start) && \
+            pm2 save"
 
-      - name: Deploy
-        run: echo "Deploying..."
+      - name: Verify deployed application
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -i "$RUNNER_TEMP/ec2_key.pem" \
+            "$EC2_USERNAME@$EC2_HOST" \
+            "curl --fail --silent --show-error --retry 5 --retry-delay 2 http://127.0.0.1:3000/ >/dev/null"
+
+      - name: Remove SSH credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/ec2_key.pem" "$HOME/.ssh/known_hosts"
